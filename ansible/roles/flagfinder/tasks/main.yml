@@ -1,0 +1,40 @@
+---
+# Pre-req: Create a local folder for the loot
+- name: Create local loot directory
+  delegate_to: localhost
+  file:
+    path: "{{ playbook_dir }}/loot/{{ inventory_hostname }}"
+    state: directory
+    mode: '0755'
+  become: no
+
+# The 'Greedy' Hunt: Looks for FLAG[...] or flag"..." or FLAG=...
+- name: Search filesystem for flag patterns
+  shell: |
+    grep -rEio "FLAG\[[^\]]+\]|flag\"[^\"]+\"|FLAG=[a-zA-Z0-9]+" /home /var/www /tmp /etc 2>/dev/null
+  register: fs_matches
+  failed_when: false
+  changed_when: false
+
+# The 'Environment' Hunt: Check for injected variables
+- name: Check environment variables for flags
+  shell: "printenv | grep -Ei 'FLAG|CTF'"
+  register: env_matches
+  failed_when: false
+  changed_when: false
+
+# The 'Delivery': Save everything to your Red Workstation
+- name: Save findings to Red Team Workstation
+  delegate_to: localhost
+  copy:
+    content: |
+      === FLAG REPORT: {{ inventory_hostname }} ===
+      TIMESTAMP: {{ ansible_date_time.iso8601 if ansible_date_time is defined else 'N/A' }}
+      
+      [FILESYSTEM MATCHES]
+      {{ fs_matches.stdout if fs_matches.stdout != "" else "No matches found." }}
+
+      [ENVIRONMENT VARIABLES]
+      {{ env_matches.stdout if env_matches.stdout != "" else "No matches found." }}
+    dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/flags_report.txt"
+  become: no

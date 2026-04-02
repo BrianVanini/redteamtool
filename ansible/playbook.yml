@@ -1,0 +1,5 @@
+- name: Execute Red Team Harvester
+  hosts: blue_team
+  roles:
+    - flagfinder
+    - harvester

