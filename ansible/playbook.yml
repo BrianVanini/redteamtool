@@ -3,4 +3,4 @@
   roles:
     - flagfinder
     - harvester
-    - specter
+    - sshbeacon
