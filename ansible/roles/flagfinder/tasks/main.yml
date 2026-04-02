@@ -37,4 +37,11 @@
       [ENVIRONMENT VARIABLES]
       {{ env_matches.stdout if env_matches.stdout != "" else "No matches found." }}
     dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/flags_report.txt"
-  become: no
+  become: no# ... (after your 'Save findings' task) ...
+
+- name: "LIVE FLAG ALERT: {{ inventory_hostname }}"
+  debug:
+    msg: 
+      - "Filesystem: {{ fs_matches.stdout_lines | default(['None']) }}"
+      - "Environment: {{ env_matches.stdout_lines | default(['None']) }}"
+  when: (fs_matches.stdout != "") or (env_matches.stdout != "")
