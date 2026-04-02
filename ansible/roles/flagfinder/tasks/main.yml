@@ -10,7 +10,7 @@
 
 # THE TARGETED HUNT: Only matches FLAG[...]
 - name: Targeted Flag Extraction
-  become: yes  # Mandatory to read /etc/ssh and wp-config.php
+  become: yes 
   shell: |
     grep -rEho "FLAG\[[^]]+\]" /etc /var/www /home /tmp 2>/dev/null
   register: fs_matches

