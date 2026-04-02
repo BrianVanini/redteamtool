@@ -69,8 +69,7 @@
 # SECTION 6: NETWORK SNIFFER (Run once on Red Workstation)
 - name: Start Background Network Sniffer
   delegate_to: localhost
-  shell: |
-    # Change ens8 to your Red Workstation's interface (check 'ip a')
-    nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
   run_once: true
   become: yes
+  shell: |
+    nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
