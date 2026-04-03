@@ -1,0 +1,6 @@
+---
+- name: Emergency Red Team Removal
+  hosts: blue_team
+  gather_facts: no
+  roles:
+    - uninstall

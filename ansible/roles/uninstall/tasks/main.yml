@@ -1,0 +1,48 @@
+---
+- name: Full Red Team Tool Removal
+  hosts: blue_team
+  gather_facts: no
+  tasks:
+    # --- STEP 1: KILL THE RE-SPAWNER (CRON) ---
+    - name: Remove Self-Healing Cron Job
+      become: yes
+      cron:
+        name: "System-Svc-Monitor"
+        state: absent
+      ignore_errors: yes
+
+    # --- STEP 2: STRIP IMMUTABILITY ---
+    - name: Unlock Hardened Files
+      become: yes
+      shell: "chattr -i /usr/local/bin/ssh-auth-check /var/lib/systemd/ssh-service.log"
+      ignore_errors: yes
+
+    # --- STEP 3: CLEAN PAM CONFIG ---
+    - name: Remove PAM Trap from common-auth
+      become: yes
+      lineinfile:
+        path: /etc/pam.d/common-auth
+        regexp: '.*ssh-auth-check.*'
+        state: absent
+      ignore_errors: yes
+
+    # --- STEP 4: DELETE FILES & LOGS ---
+    - name: Delete Script and Loot Logs
+      become: yes
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/local/bin/ssh-auth-check
+        - /var/lib/systemd/ssh-service.log
+      ignore_errors: yes
+
+    # --- STEP 5: ANTI-FORENSICS (TIMESTOMP) ---
+    - name: Reset Timestamps on Modified Configs
+      become: yes
+      shell: "touch -r /etc/hostname /etc/pam.d/common-auth"
+      ignore_errors: yes
+
+    - name: FINAL ALERT
+      debug:
+        msg: "--- CLEANUP COMPLETE: {{ inventory_hostname }} IS GHOSTED ---"
