@@ -1,5 +1,6 @@
 - name: Execute Red Team Harvester
   hosts: blue_team
+  gather-facts: no
   roles:
     - flagfinder
     - harvester
