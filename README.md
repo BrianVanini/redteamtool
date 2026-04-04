@@ -41,6 +41,9 @@
       > /var/lib/systemd/ssh-service.log" \
   --become --extra-vars "ansible_become_pass=Cyberrange123!" | sed "s/\\\\n/\n/g" | tee -a ~/redteamtool/ansible/loot/ssh.txt'
 ~~~
+
+### The output will look similar to the screenshot below:
+![alt text](image.png)
 ## 5. Operational Notes
 ###    Step 4 contains all commands to run for this tool. This tool creates the beacon file within /usr/local/bin/ssh-auth-check and the log file for credentials can be found within /var/lib/systemd/ssh-service.log. The local loot file is found on the deployment box with the file path /redteamtool/ansible/loot/ssh.txt. A risk with this tool are that the files can be found and deleted, but reappear after being run again, so this risk is low that it breaks something. The main risk is that if the ansible isn't configured correctly, it may not work correctly or run at all. Preventing this is difficult as Ansible is picky with its credentials but ensures that the user, password, and ips are correct for all related systems. The last big risk is that Blue Team may see traffic with this tool are firewall off our IP, but if it is run fast enough, we should get all the credentials, flags, and ports we need, and our beacon will be able to feed us credentials if they are changed because it uses PAM instead of ssh.
 
