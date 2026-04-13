@@ -22,7 +22,7 @@
   tasks:
     - name: Create inventory.ini
       copy:
-        dest: "./inventory/inventory.ini"
+        dest: "./inventory/targets.ini"
         content: |
           [active]
           {% for host in groups.get('active_targets', []) %}
