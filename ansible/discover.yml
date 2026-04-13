@@ -3,17 +3,17 @@
   hosts: all
   gather_facts: no
   tasks:
-    - name: Attempt to connect and check Sudo
+    - name: Verify Sudo Access
       command: whoami
       become: yes
       register: sudo_check
       ignore_unreachable: yes
       ignore_errors: yes
 
-    - name: Add to active ONLY if Sudo works
+    - name: Clear old group and add current survivors
       add_host:
         name: "{{ inventory_hostname }}"
-        group: active_targets
+        groups: active_targets
       when: sudo_check is success
 
 - name: Generate Clean Inventory
@@ -25,6 +25,6 @@
         dest: "./inventory/inventory.ini"
         content: |
           [active]
-          {% for host in groups['active_targets'] | default([]) %}
+          {% for host in groups.get('active_targets', []) %}
           {{ host }}
           {% endfor %}
