@@ -17,3 +17,16 @@
           {% for host in groups['active_targets'] | default([]) %}
           {{ host }}
           {% endfor %}
+
+- name: Attempt to connect and check Sudo
+  command: whoami
+  become: yes
+  register: sudo_check
+  ignore_unreachable: yes
+  ignore_errors: yes
+
+- name: Add to active ONLY if Sudo works
+  add_host:
+    name: "{{ inventory_hostname }}"
+    group: active_targets
+  when: sudo_check is success
