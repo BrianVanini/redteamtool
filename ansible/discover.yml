@@ -1,5 +1,19 @@
-- name: Execute IP Discovery
-  hosts: blue_team
+---
+- name: Run Discovery Scan
+  hosts: all
   gather_facts: no
   roles:
     - invgenerator
+
+- name: Generate Clean Inventory
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Create working_inventory.ini
+      copy:
+        dest: "./inventory/inventory.ini"
+        content: |
+          [active]
+          {% for host in groups['active_targets'] | default([]) %}
+          {{ host }}
+          {% endfor %}
