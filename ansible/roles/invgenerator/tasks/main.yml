@@ -1,0 +1,31 @@
+---
+- name: Discover Active Blue Team Hosts
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Attempt to connect
+      wait_for_connection:
+        timeout: 5
+      register: alive
+      ignore_unreachable: yes
+      ignore_errors: yes
+
+    - name: Add survivors to a temporary group
+      add_host:
+        name: "{{ inventory_hostname }}"
+        group: active_targets
+      when: alive is success
+
+- name: Generate Clean Inventory
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Create working inventory.ini
+      copy:
+        dest: "./inventory/inventory.ini"
+        content: |
+          [active]
+          {% for host in groups['active_targets'] %}
+          {{ host }}
+          {% endfor %}
+      when: groups['active_targets'] is defined

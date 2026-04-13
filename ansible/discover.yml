@@ -1,0 +1,5 @@
+- name: Execute IP Discovery
+  hosts: blue_team
+  gather_facts: no
+  roles:
+    - invgenerator
