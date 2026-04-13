@@ -2,14 +2,25 @@
 - name: Run Discovery Scan
   hosts: all
   gather_facts: no
-  roles:
-    - invgenerator
+  tasks:
+    - name: Attempt to connect and check Sudo
+      command: whoami
+      become: yes
+      register: sudo_check
+      ignore_unreachable: yes
+      ignore_errors: yes
+
+    - name: Add to active ONLY if Sudo works
+      add_host:
+        name: "{{ inventory_hostname }}"
+        group: active_targets
+      when: sudo_check is success
 
 - name: Generate Clean Inventory
   hosts: localhost
   gather_facts: no
   tasks:
-    - name: Create working_inventory.ini
+    - name: Create inventory.ini
       copy:
         dest: "./inventory/inventory.ini"
         content: |
@@ -17,16 +28,3 @@
           {% for host in groups['active_targets'] | default([]) %}
           {{ host }}
           {% endfor %}
-
-- name: Attempt to connect and check Sudo
-  command: whoami
-  become: yes
-  register: sudo_check
-  ignore_unreachable: yes
-  ignore_errors: yes
-
-- name: Add to active ONLY if Sudo works
-  add_host:
-    name: "{{ inventory_hostname }}"
-    group: active_targets
-  when: sudo_check is success
